@@ -1,0 +1,325 @@
+name: "OpenClaw RDP + Tailscale"
+
+on:
+  workflow_dispatch:
+    inputs:
+      # â”€â”€ Tailscale â”€â”€
+      ts_tailnet:
+        description: "Tailscale tailnet (ex: you@gmail.com)"
+        required: true
+      ts_api_key:
+        description: "Tailscale API key"
+        required: true
+      ts_authkey:
+        description: "Tailscale Auth key"
+        required: true
+
+      # â”€â”€ Runtime â”€â”€
+      runtime_minutes:
+        description: "DurÃ©e max en minutes (max 360)"
+        required: false
+        default: "355"
+      quick_test:
+        description: "Test rapide (5 min)"
+        type: boolean
+        default: false
+
+      # â”€â”€ RDP â”€â”€
+      crd_code:
+        description: "Chrome Remote Desktop code (optionnel)"
+        required: false
+        default: ""
+
+      # â”€â”€ OpenClaw â”€â”€
+      xiaomi_api_key:
+        description: "Xiaomi MiMo API Key"
+        required: true
+      gateway_token:
+        description: "OpenClaw Gateway Token"
+        required: true
+      telegram_bot_token:
+        description: "Telegram Bot Token (optionnel)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  openclaw-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 370
+    env:
+      RDP_USER: OpenClawUser
+      RDP_PASS: "OpenClaw@2026!"
+
+    steps:
+      # â”€â”€ CRD Flag â”€â”€
+      - name: Set CRD flag
+        run: |
+          $crd = @'
+          ${{ inputs.crd_code }}
+          '@.Trim()
+          if ($crd.Length -gt 0) {
+            "CRD_ENABLED=1" | Out-File -Append $env:GITHUB_ENV
+          } else {
+            "CRD_ENABLED=0" | Out-File -Append $env:GITHUB_ENV
+          }
+
+      # â”€â”€ Chrome Remote Desktop â”€â”€
+      - name: Install Chrome Remote Desktop
+        if: env.CRD_ENABLED == '1'
+        run: |
+          $exe = "${Env:PROGRAMFILES(X86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+          if (-not (Test-Path $exe)) {
+            $exePath = "$env:TEMP\chromeremotedesktophost.exe"
+            try {
+              Invoke-WebRequest -Uri "https://dl.google.com/support/remote_assistance/ChromotingHostSetup.exe" -OutFile $exePath -ErrorAction Stop
+              Start-Process -FilePath $exePath -ArgumentList "/silent", "/install" -Wait
+              Remove-Item $exePath -Force
+            } catch {
+              $msi = "$env:TEMP\chromeremotedesktophost.msi"
+              Invoke-WebRequest -Uri "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi" -OutFile $msi -ErrorAction Stop
+              Start-Process msiexec.exe -ArgumentList "/i", "`"$msi`"", "/quiet", "/norestart" -Wait
+              Remove-Item $msi -Force
+            }
+          }
+
+      - name: Run Chrome Remote Desktop
+        if: env.CRD_ENABLED == '1'
+        run: |
+          $raw = @'
+          ${{ inputs.crd_code }}
+          '@.Trim()
+          $pin = "123456".Trim()
+          $starter = "${Env:PROGRAMFILES(X86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+          if ($raw -match '--code\s*=\s*"?([^"\s]+)') {
+            $code = ([regex]::Match($raw, '--code\s*=\s*"?([^"\s]+)')).Groups[1].Value
+          } elseif ($raw -match '^4\/') {
+            $code = $raw
+          }
+          if ($code) {
+            Start-Process -FilePath $starter -ArgumentList @(
+              "--code=""$code""",
+              "--redirect-url=""https://remotedesktop.google.com/_/oauthredirect""",
+              "--name=""$Env:COMPUTERNAME""",
+              "--pin=""$pin"""
+            )
+          }
+
+      # â”€â”€ Hostname + Runtime â”€â”€
+      - name: Decide hostname + runtime
+        run: |
+          $hn = "openclaw"
+          "TS_HOSTNAME=$hn" | Out-File -Append $env:GITHUB_ENV
+
+          function Yes($v) { "$v" -match '^(?i:true|1|yes|on)$' }
+          if ("${{ inputs.runtime_minutes }}" -match '^\d+$') {
+            $runtime = [int]"${{ inputs.runtime_minutes }}"
+          } else {
+            $runtime = 355
+          }
+          if (Yes("${{ inputs.quick_test }}")) { $runtime = 5 }
+          if (-not (Yes("${{ inputs.quick_test }}")) -and $runtime -lt 6) { $runtime = 355 }
+          if ($runtime -gt 360) { $runtime = 355 }
+          "RUNTIME_MINUTES=$runtime" | Out-File -Append $env:GITHUB_ENV
+
+      # â”€â”€ Purge Tailscale â”€â”€
+      - name: Purge openclaw devices
+        run: |
+          try {
+            $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${{ inputs.ts_api_key }}:"))
+            $tn = [uri]::EscapeDataString("${{ inputs.ts_tailnet }}")
+            $list = Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/tailnet/$tn/devices" -Headers @{ Authorization = "***" }
+            foreach ($d in $list.devices) {
+              if ($d.hostname -match '^openclaw[0-9]*$') {
+                Invoke-RestMethod -Method Delete -Uri "https://api.tailscale.com/api/v2/device/$($d.id)" -Headers @{ Authorization = "***" } -EA SilentlyContinue
+              }
+            }
+            Write-Host "Purge terminÃ©e."
+          } catch {
+            Write-Host "Purge warning: $($_.Exception.Message)"
+          }
+
+      # â”€â”€ Tailscale â”€â”€
+      - name: Install + Up Tailscale
+        run: |
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (-not (Test-Path $ts)) {
+            $dst = "$env:TEMP\tailscale.msi"
+            Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $dst
+            Start-Process msiexec.exe -ArgumentList "/i", "`"$dst`"", "/quiet", "/norestart" -Wait
+            Remove-Item $dst -Force
+          }
+          & $ts logout | Out-Null
+          & $ts up --authkey "${{ inputs.ts_authkey }}" --hostname "$env:TS_HOSTNAME" --accept-dns=true --accept-routes=true
+          $ip4 = & $ts ip -4 | Select-Object -First 1
+          "TAILSCALE_IP=$ip4" | Out-File -Append $env:GITHUB_ENV
+          Write-Host "Tailscale IPv4: $ip4"
+
+      # â”€â”€ RDP User + Firewall â”€â”€
+      - name: Enable RDP user + firewall
+        run: |
+          $u = $env:RDP_USER
+          $p = $env:RDP_PASS
+          $sec = ConvertTo-SecureString $p -AsPlainText -Force
+          if (-not (Get-LocalUser -Name $u -EA SilentlyContinue)) {
+            New-LocalUser -Name $u -Password $sec -AccountNeverExpires
+            Add-LocalGroupMember -Group "Administrators" -Member $u
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u
+          } else {
+            Set-LocalUser -Name $u -Password $sec -AccountNeverExpires
+            Enable-LocalUser -Name $u
+            Add-LocalGroupMember -Group "Administrators" -Member $u -EA SilentlyContinue
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u -EA SilentlyContinue
+          }
+          Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
+          Write-Host "RDP prÃªt. user=$u | ip=$env:TAILSCALE_IP"
+
+      # â”€â”€ RustDesk â”€â”€
+      - name: Install RustDesk
+        run: |
+          $rdExe = "C:\Program Files\RustDesk\rustdesk.exe"
+          if (-not (Test-Path $rdExe)) {
+            try {
+              $dst = "$env:TEMP\rustdesk.msi"
+              Invoke-WebRequest -Uri "https://github.com/rustdesk/rustdesk/releases/download/1.3.1/rustdesk-1.3.1-x86_64.msi" -OutFile $dst
+              Start-Process msiexec.exe -ArgumentList "/i", "`"$dst`"", "/quiet", "/norestart" -Wait
+              Remove-Item $dst -Force
+            } catch {
+              winget install --id RustDesk.RustDesk -e --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+            }
+          }
+          Start-Process -FilePath $rdExe -EA SilentlyContinue
+          Start-Sleep -Seconds 5
+
+      # â”€â”€ Node.js â”€â”€
+      - name: Install Node.js 22
+        run: |
+          $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+          if ($nodeCmd) {
+            $ver = & node --version 2>&1
+            Write-Host "Node.js dÃ©jÃ  prÃ©sent : $ver"
+          } else {
+            Write-Host "Installation de Node.js..."
+            winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements
+            $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+            $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $env:Path = "$machinePath;$userPath"
+          }
+          $ver = & node --version 2>&1
+          Write-Host "Node.js version : $ver"
+
+      # â”€â”€ pnpm â”€â”€
+      - name: Install pnpm
+        run: |
+          npm install -g pnpm
+          $ver = & pnpm --version 2>&1
+          Write-Host "pnpm version : $ver"
+
+      # â”€â”€ OpenClaw â”€â”€
+      - name: Install OpenClaw
+        run: |
+          pnpm install -g openclaw
+          $ver = & openclaw --version 2>&1
+          Write-Host "OpenClaw version : $ver"
+
+      # â”€â”€ Configure OpenClaw â”€â”€
+      - name: Configure OpenClaw
+        run: |
+          $homeDir = $env:USERPROFILE
+          $configDir = "$homeDir\.openclaw"
+          New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+
+          $config = @{
+            agents = @{
+              defaults = @{
+                workspace = "$configDir\workspace"
+                models = @{
+                  "xiaomi/mimo-v2-flash" = @{ alias = "Xiaomi" }
+                  "xiaomi/mimo-v2.5-pro" = @{}
+                }
+                model = @{ primary = "xiaomi/mimo-v2.5-pro" }
+              }
+            }
+            gateway = @{
+              mode = "local"
+              auth = @{
+                mode = "token"
+                token = "${{ inputs.gateway_token }}"
+              }
+              port = 18789
+              bind = "loopback"
+              controlUi = @{ allowInsecureAuth = $true }
+            }
+            models = @{
+              mode = "merge"
+              providers = @{
+                xiaomi = @{
+                  baseUrl = "https://api.xiaomimimo.com/v1"
+                  api = "openai-completions"
+                  models = @(
+                    @{ id = "mimo-v2-flash"; name = "Xiaomi MiMo V2 Flash"; reasoning = $false; input = @("text"); contextWindow = 262144; maxTokens = 8192; cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 } }
+                    @{ id = "mimo-v2-pro"; name = "Xiaomi MiMo V2 Pro"; reasoning = $true; input = @("text"); contextWindow = 1048576; maxTokens = 32000; cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 } }
+                    @{ id = "mimo-v2-omni"; name = "Xiaomi MiMo V2 Omni"; reasoning = $true; input = @("text", "image"); contextWindow = 262144; maxTokens = 32000; cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 } }
+                  )
+                }
+              }
+            }
+            auth = @{
+              profiles = @{
+                "xiaomi:default" = @{
+                  provider = "xiaomi"
+                  mode = "api_key"
+                }
+              }
+            }
+          }
+
+          $json = $config | ConvertTo-Json -Depth 20
+          Set-Content -Path "$configDir\openclaw.json" -Value $json -Encoding UTF8
+          Write-Host "Config OpenClaw crÃ©Ã©e âœ…"
+
+      # â”€â”€ API Key Xiaomi â”€â”€
+      - name: Configure Xiaomi API Key
+        run: |
+          $env:XIAOMI_API_KEY = "${{ inputs.xiaomi_api_key }}"
+          Write-Host "Xiaomi API Key configurÃ©e âœ…"
+
+      # â”€â”€ Telegram Bot Token â”€â”€
+      - name: Configure Telegram (optional)
+        if: inputs.telegram_bot_token != ''
+        run: |
+          Write-Host "Telegram bot token configurÃ© âœ…"
+
+      # â”€â”€ OpenClaw Onboard â”€â”€
+      - name: Run OpenClaw onboard
+        run: |
+          openclaw onboard --mode local --skip-welcome
+          Write-Host "OpenClaw onboard terminÃ© âœ…"
+
+      # â”€â”€ Start Gateway â”€â”€
+      - name: Start OpenClaw Gateway
+        run: |
+          Start-Process -FilePath "openclaw" -ArgumentList "gateway", "run" -RedirectStandardOutput "C:\openclaw_stdout.log" -RedirectStandardError "C:\openclaw_stderr.log" -NoNewWindow
+          Start-Sleep -Seconds 10
+          openclaw gateway status
+          Write-Host "Gateway dÃ©marrÃ© âœ…"
+
+      # â”€â”€ Keep Alive â”€â”€
+      - name: Keep alive
+        run: |
+          $mins = [int]"$env:RUNTIME_MINUTES"
+          $end = (Get-Date).AddMinutes($mins)
+          while ((Get-Date) -lt $end) {
+            Write-Host ("Heartbeat " + (Get-Date).ToString("HH:mm:ss") + " | ends " + $end.ToString("HH:mm:ss") + " | ip=$env:TAILSCALE_IP")
+            Start-Sleep -Seconds 60
+          }
+
+      # â”€â”€ Cleanup â”€â”€
+      - name: Cleanup
+        if: always()
+        run: |
+          Write-Host "Nettoyage terminÃ©."
