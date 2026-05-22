@@ -25,7 +25,7 @@ on:
         required: false
         default: ""
       xiaomi_api_key:
-        description: "Xiaomi MiMo API Key"
+        description: "Xiaomi MiMo Token Plan API Key (tp-xxxxx)"
         required: true
       gateway_token:
         description: "OpenClaw Gateway Token"
@@ -206,55 +206,83 @@ jobs:
           $ver = & node --version 2>&1
           Write-Host "Node.js version : $ver"
 
-      # ── pnpm + OpenClaw (un seul step) ──
-      - name: Install pnpm + OpenClaw
+      # ── OpenClaw (install officiel Windows) ──
+      - name: Install OpenClaw
         run: |
-          # Installer pnpm
-          npm install -g pnpm
+          iwr -useb https://openclaw.ai/install.ps1 | iex
+          Start-Sleep -Seconds 5
 
-          # Configurer pnpm
-          $env:PNPM_HOME = "$env:LOCALAPPDATA\pnpm\bin"
-          & pnpm setup
+          # Trouver le binaire openclaw
+          $found = Get-Command openclaw -ErrorAction SilentlyContinue
+          if ($found) {
+            Write-Host "OpenClaw trouvé : $($found.Source)"
+            $ver = & openclaw --version 2>&1
+            Write-Host "OpenClaw version : $ver"
+            # Sauvegarder le dossier pour les steps suivants
+            $binDir = Split-Path $found.Source
+            "OPENCLAW_BIN=$binDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            Write-Host "WARN: openclaw non trouvé dans PATH, recherche..."
+            Get-ChildItem -Path "$env:LOCALAPPDATA\pnpm" -Filter "openclaw*" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
+            Get-ChildItem -Path "$env:APPDATA\npm" -Filter "openclaw*" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
+            Get-ChildItem -Path "$env:USERPROFILE" -Filter "openclaw.exe" -Recurse -Depth 5 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
+          }
 
-          # Recharger le PATH complet
-          $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
-          $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
-          $env:Path = "$env:PNPM_HOME;$userPath;$machinePath"
-
-          # Persister pour les steps suivants
-          "$env:PNPM_HOME" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-          # Vérifier pnpm
-          Write-Host "pnpm version : $(pnpm --version)"
-
-          # Installer OpenClaw
-          pnpm install -g openclaw
-
-          # Vérifier OpenClaw
-          Write-Host "OpenClaw version : $(openclaw --version)"
-
-      # ── Configure OpenClaw ──
+      # ── Configure OpenClaw (Token Plan - doc officielle) ──
       - name: Configure OpenClaw
         run: |
-          # Recharger le PATH
-          $env:Path = "$env:LOCALAPPDATA\pnpm\bin;" + [System.Environment]::GetEnvironmentVariable("Path", "User") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "Machine")
-
           $homeDir = $env:USERPROFILE
           $configDir = "$homeDir\.openclaw"
           New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-          New-Item -ItemType Directory -Path "$configDir\auth" -Force | Out-Null
           New-Item -ItemType Directory -Path "$configDir\workspace" -Force | Out-Null
 
-          # openclaw.json
+          # ============================================================
+          # Token Plan config (doc officielle) :
+          # - Provider nommé "xiaomi-coding" (PAS "xiaomi")
+          # - PAS de bloc "auth" (supprimé)
+          # - apiKey directement dans le provider
+          # - baseUrl Token Plan : https://token-plan-sgp.xiaomimimo.com/v1
+          # ============================================================
+
           $config = @{
+            models = @{
+              mode = "merge"
+              providers = @{
+                "xiaomi-coding" = @{
+                  baseUrl = "https://token-plan-sgp.xiaomimimo.com/v1"
+                  apiKey = "${{ inputs.xiaomi_api_key }}"
+                  api = "openai-completions"
+                  models = @(
+                    @{
+                      id = "mimo-v2.5-pro"
+                      name = "mimo-v2.5-pro"
+                      reasoning = $true
+                      input = @("text")
+                      contextWindow = 1048576
+                      maxTokens = 32000
+                    }
+                    @{
+                      id = "mimo-v2.5"
+                      name = "mimo-v2.5"
+                      reasoning = $true
+                      input = @("text", "image")
+                      contextWindow = 262144
+                      maxTokens = 32000
+                    }
+                  )
+                }
+              }
+            }
             agents = @{
               defaults = @{
                 workspace = "$configDir\workspace"
-                models = @{
-                  "xiaomi/mimo-v2-pro" = @{}
-                  "xiaomi/mimo-v2-flash" = @{ alias = "Xiaomi" }
+                model = @{
+                  primary = "xiaomi-coding/mimo-v2.5-pro"
                 }
-                model = @{ primary = "xiaomi/mimo-v2-pro" }
+                models = @{
+                  "xiaomi-coding/mimo-v2.5-pro" = @{}
+                  "xiaomi-coding/mimo-v2.5" = @{}
+                }
               }
             }
             gateway = @{
@@ -266,30 +294,13 @@ jobs:
               port = 18789
               bind = "loopback"
               tailscale = @{ mode = "off"; resetOnExit = $false }
-              nodes = @{ denyCommands = @("camera.snap", "camera.clip", "screen.record", "contacts.add", "calendar.add", "reminders.add", "sms.send", "sms.search") }
+              nodes = @{
+                denyCommands = @("camera.snap", "camera.clip", "screen.record", "contacts.add", "calendar.add", "reminders.add", "sms.send", "sms.search")
+              }
               controlUi = @{ allowInsecureAuth = $true }
             }
             session = @{ dmScope = "per-channel-peer" }
             tools = @{ profile = "coding" }
-            models = @{
-              mode = "merge"
-              providers = @{
-                xiaomi = @{
-                  baseUrl = "https://token-plan-sgp.xiaomimimo.com/v1"
-                  api = "openai-completions"
-                  models = @(
-                    @{ id = "mimo-v2-flash"; name = "Xiaomi MiMo V2 Flash"; reasoning = $false; input = @("text"); cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 }; contextWindow = 262144; maxTokens = 8192 }
-                    @{ id = "mimo-v2-pro"; name = "Xiaomi MiMo V2 Pro"; reasoning = $true; input = @("text"); cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 }; contextWindow = 1048576; maxTokens = 32000 }
-                    @{ id = "mimo-v2-omni"; name = "Xiaomi MiMo V2 Omni"; reasoning = $true; input = @("text", "image"); cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 }; contextWindow = 262144; maxTokens = 32000 }
-                  )
-                }
-              }
-            }
-            auth = @{
-              profiles = @{
-                "xiaomi:default" = @{ provider = "xiaomi"; mode = "api_key" }
-              }
-            }
             channels = @{
               telegram = @{
                 enabled = $("${{ inputs.telegram_bot_token }}" -ne "")
@@ -301,35 +312,20 @@ jobs:
 
           $json = $config | ConvertTo-Json -Depth 20
           Set-Content -Path "$configDir\openclaw.json" -Value $json -Encoding UTF8
-          Write-Host "Config OpenClaw créée ✅"
-
-          # auth/profiles.json
-          $authConfig = @{
-            version = 1
-            profiles = @{
-              "xiaomi:default" = @{
-                type = "api_key"
-                provider = "xiaomi"
-                key = "${{ inputs.xiaomi_api_key }}"
-              }
-            }
-          }
-
-          $authJson = $authConfig | ConvertTo-Json -Depth 10
-          Set-Content -Path "$configDir\auth\profiles.json" -Value $authJson -Encoding UTF8
-          Write-Host "Auth profiles créée ✅"
+          Write-Host "Config Token Plan créée ✅"
+          Write-Host "Provider: xiaomi-coding"
+          Write-Host "Model: xiaomi-coding/mimo-v2.5-pro"
+          Write-Host "baseUrl: https://token-plan-sgp.xiaomimimo.com/v1"
 
       # ── OpenClaw Onboard ──
       - name: Run OpenClaw onboard
         run: |
-          $env:Path = "$env:LOCALAPPDATA\pnpm\bin;" + [System.Environment]::GetEnvironmentVariable("Path", "User") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "Machine")
           openclaw onboard --mode local --skip-welcome
           Write-Host "OpenClaw onboard terminé ✅"
 
       # ── Start Gateway ──
       - name: Start OpenClaw Gateway
         run: |
-          $env:Path = "$env:LOCALAPPDATA\pnpm\bin;" + [System.Environment]::GetEnvironmentVariable("Path", "User") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "Machine")
           Start-Process -FilePath "openclaw" -ArgumentList "gateway", "run" -RedirectStandardOutput "C:\openclaw_stdout.log" -RedirectStandardError "C:\openclaw_stderr.log" -NoNewWindow
           Start-Sleep -Seconds 15
           openclaw gateway status
