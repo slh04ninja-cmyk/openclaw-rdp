@@ -206,50 +206,46 @@ jobs:
           $ver = & node --version 2>&1
           Write-Host "Node.js version : $ver"
 
-      # ── pnpm ──
-      # FIX: pnpm setup + refresh PATH
-      - name: Install pnpm
+      # ── pnpm + OpenClaw (un seul step) ──
+      - name: Install pnpm + OpenClaw
         run: |
+          # Installer pnpm
           npm install -g pnpm
-          # FIX: configurer pnpm pour que le bin soit dans un chemin connu
-          $env:PNPM_HOME = "$env:LOCALAPPDATA\pnpm"
-          [System.Environment]::SetEnvironmentVariable("PNPM_HOME", $env:PNPM_HOME, "User")
-          & pnpm setup
-          # FIX: ajouter pnpm au PATH de la session courante
-          $env:PATH = "$env:PNPM_HOME;$env:PATH"
-          # FIX: persister dans GITHUB_PATH pour les steps suivants
-          "$env:PNPM_HOME" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          $ver = & pnpm --version 2>&1
-          Write-Host "pnpm version : $ver"
-          Write-Host "pnpm bin dir : $env:PNPM_HOME"
-          Write-Host "PATH: $env:PATH"
 
-      # ── OpenClaw ──
-      # FIX: ajouter pnpm au PATH + installer correctement
-      - name: Install OpenClaw
-        run: |
-          # FIX: s'assurer que le PATH est à jour
-          $env:PNPM_HOME = "$env:LOCALAPPDATA\pnpm"
-          $env:PATH = "$env:PNPM_HOME;$env:PATH"
+          # Configurer pnpm
+          $env:PNPM_HOME = "$env:LOCALAPPDATA\pnpm\bin"
+          & pnpm setup
+
+          # Recharger le PATH complet
+          $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+          $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+          $env:Path = "$env:PNPM_HOME;$userPath;$machinePath"
+
+          # Persister pour les steps suivants
+          "$env:PNPM_HOME" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          # Vérifier pnpm
+          Write-Host "pnpm version : $(pnpm --version)"
+
+          # Installer OpenClaw
           pnpm install -g openclaw
-          # FIX: vérifier que le binaire existe
-          $binPath = "$env:PNPM_HOME\openclaw.cmd"
-          if (Test-Path $binPath) {
-            Write-Host "OpenClaw binaire trouvé : $binPath"
-          } else {
-            # chercher le binaire
-            Get-ChildItem -Path $env:PNPM_HOME -Filter "openclaw*" -Recurse | ForEach-Object { Write-Host "Trouvé: $($_.FullName)" }
-          }
-          $ver = & openclaw --version 2>&1
-          Write-Host "OpenClaw version : $ver"
+
+          # Vérifier OpenClaw
+          Write-Host "OpenClaw version : $(openclaw --version)"
 
       # ── Configure OpenClaw ──
       - name: Configure OpenClaw
         run: |
+          # Recharger le PATH
+          $env:Path = "$env:LOCALAPPDATA\pnpm\bin;" + [System.Environment]::GetEnvironmentVariable("Path", "User") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+
           $homeDir = $env:USERPROFILE
           $configDir = "$homeDir\.openclaw"
           New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+          New-Item -ItemType Directory -Path "$configDir\auth" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$configDir\workspace" -Force | Out-Null
 
+          # openclaw.json
           $config = @{
             agents = @{
               defaults = @{
@@ -296,7 +292,7 @@ jobs:
             }
             channels = @{
               telegram = @{
-                enabled = if ("${{ inputs.telegram_bot_token }}" -ne "") { $true } else { $false }
+                enabled = $("${{ inputs.telegram_bot_token }}" -ne "")
                 groups = @{ "*" = @{ requireMention = $true } }
                 botToken = "${{ inputs.telegram_bot_token }}"
               }
@@ -306,14 +302,8 @@ jobs:
           $json = $config | ConvertTo-Json -Depth 20
           Set-Content -Path "$configDir\openclaw.json" -Value $json -Encoding UTF8
           Write-Host "Config OpenClaw créée ✅"
-          Write-Host "Config path : $configDir\openclaw.json"
 
-      # FIX: créer le fichier d'auth séparé (manquait dans votre workflow)
-      - name: Configure Xiaomi API Key
-        run: |
-          $configDir = "$env:USERPROFILE\.openclaw"
-          New-Item -ItemType Directory -Path $configDir\auth -Force | Out-Null
-
+          # auth/profiles.json
           $authConfig = @{
             version = 1
             profiles = @{
@@ -327,22 +317,19 @@ jobs:
 
           $authJson = $authConfig | ConvertTo-Json -Depth 10
           Set-Content -Path "$configDir\auth\profiles.json" -Value $authJson -Encoding UTF8
-          Write-Host "Xiaomi API Key configurée ✅"
-          Write-Host "Auth path : $configDir\auth\profiles.json"
+          Write-Host "Auth profiles créée ✅"
 
       # ── OpenClaw Onboard ──
       - name: Run OpenClaw onboard
         run: |
-          $env:PNPM_HOME = "$env:LOCALAPPDATA\pnpm"
-          $env:PATH = "$env:PNPM_HOME;$env:PATH"
+          $env:Path = "$env:LOCALAPPDATA\pnpm\bin;" + [System.Environment]::GetEnvironmentVariable("Path", "User") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "Machine")
           openclaw onboard --mode local --skip-welcome
           Write-Host "OpenClaw onboard terminé ✅"
 
       # ── Start Gateway ──
       - name: Start OpenClaw Gateway
         run: |
-          $env:PNPM_HOME = "$env:LOCALAPPDATA\pnpm"
-          $env:PATH = "$env:PNPM_HOME;$env:PATH"
+          $env:Path = "$env:LOCALAPPDATA\pnpm\bin;" + [System.Environment]::GetEnvironmentVariable("Path", "User") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "Machine")
           Start-Process -FilePath "openclaw" -ArgumentList "gateway", "run" -RedirectStandardOutput "C:\openclaw_stdout.log" -RedirectStandardError "C:\openclaw_stderr.log" -NoNewWindow
           Start-Sleep -Seconds 15
           openclaw gateway status
