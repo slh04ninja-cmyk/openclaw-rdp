@@ -3,7 +3,6 @@ name: "OpenClaw RDP + Tailscale"
 on:
   workflow_dispatch:
     inputs:
-      # ── Tailscale ──
       ts_tailnet:
         description: "Tailscale tailnet (ex: you@gmail.com)"
         required: true
@@ -13,8 +12,6 @@ on:
       ts_authkey:
         description: "Tailscale Auth key"
         required: true
-
-      # ── Runtime ──
       runtime_minutes:
         description: "Durée max en minutes (max 360)"
         required: false
@@ -23,25 +20,21 @@ on:
         description: "Test rapide (5 min)"
         type: boolean
         default: false
-
-      # ── RDP ──
       crd_code:
         description: "Chrome Remote Desktop code (optionnel)"
         required: false
         default: ""
-
-      # ── OpenClaw ──
       xiaomi_api_key:
         description: "Xiaomi MiMo API Key"
         required: true
       gateway_token:
         description: "OpenClaw Gateway Token"
         required: true
-        default: "e38167…280b"
+        default: "e381674038f63a79c4a9f6715d8a400d364b90840fe6280b"
       telegram_bot_token:
         description: "Telegram Bot Token (optionnel)"
         required: false
-        default: "861305…-xBk"
+        default: "8613051199:AAGFbK9GFQ2cyjRqlOmBtACgf6wffV8-xBk"
 
 permissions:
   contents: read
@@ -114,7 +107,6 @@ jobs:
         run: |
           $hn = "openclaw"
           "TS_HOSTNAME=$hn" | Out-File -Append $env:GITHUB_ENV
-
           function Yes($v) { "$v" -match '^(?i:true|1|yes|on)$' }
           if ("${{ inputs.runtime_minutes }}" -match '^\d+$') {
             $runtime = [int]"${{ inputs.runtime_minutes }}"
@@ -215,16 +207,39 @@ jobs:
           Write-Host "Node.js version : $ver"
 
       # ── pnpm ──
+      # FIX: pnpm setup + refresh PATH
       - name: Install pnpm
         run: |
           npm install -g pnpm
+          # FIX: configurer pnpm pour que le bin soit dans un chemin connu
+          $env:PNPM_HOME = "$env:LOCALAPPDATA\pnpm"
+          [System.Environment]::SetEnvironmentVariable("PNPM_HOME", $env:PNPM_HOME, "User")
+          & pnpm setup
+          # FIX: ajouter pnpm au PATH de la session courante
+          $env:PATH = "$env:PNPM_HOME;$env:PATH"
+          # FIX: persister dans GITHUB_PATH pour les steps suivants
+          "$env:PNPM_HOME" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $ver = & pnpm --version 2>&1
           Write-Host "pnpm version : $ver"
+          Write-Host "pnpm bin dir : $env:PNPM_HOME"
+          Write-Host "PATH: $env:PATH"
 
       # ── OpenClaw ──
+      # FIX: ajouter pnpm au PATH + installer correctement
       - name: Install OpenClaw
         run: |
+          # FIX: s'assurer que le PATH est à jour
+          $env:PNPM_HOME = "$env:LOCALAPPDATA\pnpm"
+          $env:PATH = "$env:PNPM_HOME;$env:PATH"
           pnpm install -g openclaw
+          # FIX: vérifier que le binaire existe
+          $binPath = "$env:PNPM_HOME\openclaw.cmd"
+          if (Test-Path $binPath) {
+            Write-Host "OpenClaw binaire trouvé : $binPath"
+          } else {
+            # chercher le binaire
+            Get-ChildItem -Path $env:PNPM_HOME -Filter "openclaw*" -Recurse | ForEach-Object { Write-Host "Trouvé: $($_.FullName)" }
+          }
           $ver = & openclaw --version 2>&1
           Write-Host "OpenClaw version : $ver"
 
@@ -291,24 +306,45 @@ jobs:
           $json = $config | ConvertTo-Json -Depth 20
           Set-Content -Path "$configDir\openclaw.json" -Value $json -Encoding UTF8
           Write-Host "Config OpenClaw créée ✅"
+          Write-Host "Config path : $configDir\openclaw.json"
 
-      # ── OpenClaw Auth ──
+      # FIX: créer le fichier d'auth séparé (manquait dans votre workflow)
       - name: Configure Xiaomi API Key
         run: |
-          $env:XIAOMI_API_KEY = "${{ inputs.xiaomi_api_key }}"
+          $configDir = "$env:USERPROFILE\.openclaw"
+          New-Item -ItemType Directory -Path $configDir\auth -Force | Out-Null
+
+          $authConfig = @{
+            version = 1
+            profiles = @{
+              "xiaomi:default" = @{
+                type = "api_key"
+                provider = "xiaomi"
+                key = "${{ inputs.xiaomi_api_key }}"
+              }
+            }
+          }
+
+          $authJson = $authConfig | ConvertTo-Json -Depth 10
+          Set-Content -Path "$configDir\auth\profiles.json" -Value $authJson -Encoding UTF8
           Write-Host "Xiaomi API Key configurée ✅"
+          Write-Host "Auth path : $configDir\auth\profiles.json"
 
       # ── OpenClaw Onboard ──
       - name: Run OpenClaw onboard
         run: |
+          $env:PNPM_HOME = "$env:LOCALAPPDATA\pnpm"
+          $env:PATH = "$env:PNPM_HOME;$env:PATH"
           openclaw onboard --mode local --skip-welcome
           Write-Host "OpenClaw onboard terminé ✅"
 
       # ── Start Gateway ──
       - name: Start OpenClaw Gateway
         run: |
+          $env:PNPM_HOME = "$env:LOCALAPPDATA\pnpm"
+          $env:PATH = "$env:PNPM_HOME;$env:PATH"
           Start-Process -FilePath "openclaw" -ArgumentList "gateway", "run" -RedirectStandardOutput "C:\openclaw_stdout.log" -RedirectStandardError "C:\openclaw_stderr.log" -NoNewWindow
-          Start-Sleep -Seconds 10
+          Start-Sleep -Seconds 15
           openclaw gateway status
           Write-Host "Gateway démarré ✅"
 
@@ -327,3 +363,4 @@ jobs:
         if: always()
         run: |
           Write-Host "Nettoyage terminé."
+          
