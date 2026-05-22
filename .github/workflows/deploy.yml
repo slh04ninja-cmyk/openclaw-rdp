@@ -3,7 +3,7 @@ name: "OpenClaw RDP + Tailscale"
 on:
   workflow_dispatch:
     inputs:
-      # â”€â”€ Tailscale â”€â”€
+      # ── Tailscale ──
       ts_tailnet:
         description: "Tailscale tailnet (ex: you@gmail.com)"
         required: true
@@ -14,9 +14,9 @@ on:
         description: "Tailscale Auth key"
         required: true
 
-      # â”€â”€ Runtime â”€â”€
+      # ── Runtime ──
       runtime_minutes:
-        description: "DurÃ©e max en minutes (max 360)"
+        description: "Durée max en minutes (max 360)"
         required: false
         default: "355"
       quick_test:
@@ -24,23 +24,24 @@ on:
         type: boolean
         default: false
 
-      # â”€â”€ RDP â”€â”€
+      # ── RDP ──
       crd_code:
         description: "Chrome Remote Desktop code (optionnel)"
         required: false
         default: ""
 
-      # â”€â”€ OpenClaw â”€â”€
+      # ── OpenClaw ──
       xiaomi_api_key:
         description: "Xiaomi MiMo API Key"
         required: true
       gateway_token:
         description: "OpenClaw Gateway Token"
         required: true
+        default: "e38167…280b"
       telegram_bot_token:
         description: "Telegram Bot Token (optionnel)"
         required: false
-        default: ""
+        default: "861305…-xBk"
 
 permissions:
   contents: read
@@ -55,7 +56,7 @@ jobs:
       RDP_PASS: "OpenClaw@2026!"
 
     steps:
-      # â”€â”€ CRD Flag â”€â”€
+      # ── CRD Flag ──
       - name: Set CRD flag
         run: |
           $crd = @'
@@ -67,7 +68,7 @@ jobs:
             "CRD_ENABLED=0" | Out-File -Append $env:GITHUB_ENV
           }
 
-      # â”€â”€ Chrome Remote Desktop â”€â”€
+      # ── Chrome Remote Desktop ──
       - name: Install Chrome Remote Desktop
         if: env.CRD_ENABLED == '1'
         run: |
@@ -108,7 +109,7 @@ jobs:
             )
           }
 
-      # â”€â”€ Hostname + Runtime â”€â”€
+      # ── Hostname + Runtime ──
       - name: Decide hostname + runtime
         run: |
           $hn = "openclaw"
@@ -125,24 +126,25 @@ jobs:
           if ($runtime -gt 360) { $runtime = 355 }
           "RUNTIME_MINUTES=$runtime" | Out-File -Append $env:GITHUB_ENV
 
-      # â”€â”€ Purge Tailscale â”€â”€
+      # ── Purge Tailscale ──
       - name: Purge openclaw devices
         run: |
           try {
             $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${{ inputs.ts_api_key }}:"))
             $tn = [uri]::EscapeDataString("${{ inputs.ts_tailnet }}")
-            $list = Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/tailnet/$tn/devices" -Headers @{ Authorization = "***" }
+            $list = Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/tailnet/$tn/devices" -Headers @{ Authorization = "Basic $auth" }
             foreach ($d in $list.devices) {
               if ($d.hostname -match '^openclaw[0-9]*$') {
-                Invoke-RestMethod -Method Delete -Uri "https://api.tailscale.com/api/v2/device/$($d.id)" -Headers @{ Authorization = "***" } -EA SilentlyContinue
+                $auth2 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${{ inputs.ts_api_key }}:"))
+                Invoke-RestMethod -Method Delete -Uri "https://api.tailscale.com/api/v2/device/$($d.id)" -Headers @{ Authorization = "Basic $auth2" } -EA SilentlyContinue
               }
             }
-            Write-Host "Purge terminÃ©e."
+            Write-Host "Purge terminée."
           } catch {
             Write-Host "Purge warning: $($_.Exception.Message)"
           }
 
-      # â”€â”€ Tailscale â”€â”€
+      # ── Tailscale ──
       - name: Install + Up Tailscale
         run: |
           $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
@@ -158,7 +160,7 @@ jobs:
           "TAILSCALE_IP=$ip4" | Out-File -Append $env:GITHUB_ENV
           Write-Host "Tailscale IPv4: $ip4"
 
-      # â”€â”€ RDP User + Firewall â”€â”€
+      # ── RDP User + Firewall ──
       - name: Enable RDP user + firewall
         run: |
           $u = $env:RDP_USER
@@ -176,9 +178,9 @@ jobs:
           }
           Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-          Write-Host "RDP prÃªt. user=$u | ip=$env:TAILSCALE_IP"
+          Write-Host "RDP prêt. user=$u | ip=$env:TAILSCALE_IP"
 
-      # â”€â”€ RustDesk â”€â”€
+      # ── RustDesk ──
       - name: Install RustDesk
         run: |
           $rdExe = "C:\Program Files\RustDesk\rustdesk.exe"
@@ -195,13 +197,13 @@ jobs:
           Start-Process -FilePath $rdExe -EA SilentlyContinue
           Start-Sleep -Seconds 5
 
-      # â”€â”€ Node.js â”€â”€
+      # ── Node.js ──
       - name: Install Node.js 22
         run: |
           $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
           if ($nodeCmd) {
             $ver = & node --version 2>&1
-            Write-Host "Node.js dÃ©jÃ  prÃ©sent : $ver"
+            Write-Host "Node.js déjà présent : $ver"
           } else {
             Write-Host "Installation de Node.js..."
             winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements
@@ -212,21 +214,21 @@ jobs:
           $ver = & node --version 2>&1
           Write-Host "Node.js version : $ver"
 
-      # â”€â”€ pnpm â”€â”€
+      # ── pnpm ──
       - name: Install pnpm
         run: |
           npm install -g pnpm
           $ver = & pnpm --version 2>&1
           Write-Host "pnpm version : $ver"
 
-      # â”€â”€ OpenClaw â”€â”€
+      # ── OpenClaw ──
       - name: Install OpenClaw
         run: |
           pnpm install -g openclaw
           $ver = & openclaw --version 2>&1
           Write-Host "OpenClaw version : $ver"
 
-      # â”€â”€ Configure OpenClaw â”€â”€
+      # ── Configure OpenClaw ──
       - name: Configure OpenClaw
         run: |
           $homeDir = $env:USERPROFILE
@@ -238,10 +240,10 @@ jobs:
               defaults = @{
                 workspace = "$configDir\workspace"
                 models = @{
+                  "xiaomi/mimo-v2-pro" = @{}
                   "xiaomi/mimo-v2-flash" = @{ alias = "Xiaomi" }
-                  "xiaomi/mimo-v2.5-pro" = @{}
                 }
-                model = @{ primary = "xiaomi/mimo-v2.5-pro" }
+                model = @{ primary = "xiaomi/mimo-v2-pro" }
               }
             }
             gateway = @{
@@ -252,63 +254,65 @@ jobs:
               }
               port = 18789
               bind = "loopback"
+              tailscale = @{ mode = "off"; resetOnExit = $false }
+              nodes = @{ denyCommands = @("camera.snap", "camera.clip", "screen.record", "contacts.add", "calendar.add", "reminders.add", "sms.send", "sms.search") }
               controlUi = @{ allowInsecureAuth = $true }
             }
+            session = @{ dmScope = "per-channel-peer" }
+            tools = @{ profile = "coding" }
             models = @{
               mode = "merge"
               providers = @{
                 xiaomi = @{
-                  baseUrl = "https://api.xiaomimimo.com/v1"
+                  baseUrl = "https://token-plan-sgp.xiaomimimo.com/v1"
                   api = "openai-completions"
                   models = @(
-                    @{ id = "mimo-v2-flash"; name = "Xiaomi MiMo V2 Flash"; reasoning = $false; input = @("text"); contextWindow = 262144; maxTokens = 8192; cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 } }
-                    @{ id = "mimo-v2-pro"; name = "Xiaomi MiMo V2 Pro"; reasoning = $true; input = @("text"); contextWindow = 1048576; maxTokens = 32000; cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 } }
-                    @{ id = "mimo-v2-omni"; name = "Xiaomi MiMo V2 Omni"; reasoning = $true; input = @("text", "image"); contextWindow = 262144; maxTokens = 32000; cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 } }
+                    @{ id = "mimo-v2-flash"; name = "Xiaomi MiMo V2 Flash"; reasoning = $false; input = @("text"); cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 }; contextWindow = 262144; maxTokens = 8192 }
+                    @{ id = "mimo-v2-pro"; name = "Xiaomi MiMo V2 Pro"; reasoning = $true; input = @("text"); cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 }; contextWindow = 1048576; maxTokens = 32000 }
+                    @{ id = "mimo-v2-omni"; name = "Xiaomi MiMo V2 Omni"; reasoning = $true; input = @("text", "image"); cost = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 }; contextWindow = 262144; maxTokens = 32000 }
                   )
                 }
               }
             }
             auth = @{
               profiles = @{
-                "xiaomi:default" = @{
-                  provider = "xiaomi"
-                  mode = "api_key"
-                }
+                "xiaomi:default" = @{ provider = "xiaomi"; mode = "api_key" }
+              }
+            }
+            channels = @{
+              telegram = @{
+                enabled = if ("${{ inputs.telegram_bot_token }}" -ne "") { $true } else { $false }
+                groups = @{ "*" = @{ requireMention = $true } }
+                botToken = "${{ inputs.telegram_bot_token }}"
               }
             }
           }
 
           $json = $config | ConvertTo-Json -Depth 20
           Set-Content -Path "$configDir\openclaw.json" -Value $json -Encoding UTF8
-          Write-Host "Config OpenClaw crÃ©Ã©e âœ…"
+          Write-Host "Config OpenClaw créée ✅"
 
-      # â”€â”€ API Key Xiaomi â”€â”€
+      # ── OpenClaw Auth ──
       - name: Configure Xiaomi API Key
         run: |
           $env:XIAOMI_API_KEY = "${{ inputs.xiaomi_api_key }}"
-          Write-Host "Xiaomi API Key configurÃ©e âœ…"
+          Write-Host "Xiaomi API Key configurée ✅"
 
-      # â”€â”€ Telegram Bot Token â”€â”€
-      - name: Configure Telegram (optional)
-        if: inputs.telegram_bot_token != ''
-        run: |
-          Write-Host "Telegram bot token configurÃ© âœ…"
-
-      # â”€â”€ OpenClaw Onboard â”€â”€
+      # ── OpenClaw Onboard ──
       - name: Run OpenClaw onboard
         run: |
           openclaw onboard --mode local --skip-welcome
-          Write-Host "OpenClaw onboard terminÃ© âœ…"
+          Write-Host "OpenClaw onboard terminé ✅"
 
-      # â”€â”€ Start Gateway â”€â”€
+      # ── Start Gateway ──
       - name: Start OpenClaw Gateway
         run: |
           Start-Process -FilePath "openclaw" -ArgumentList "gateway", "run" -RedirectStandardOutput "C:\openclaw_stdout.log" -RedirectStandardError "C:\openclaw_stderr.log" -NoNewWindow
           Start-Sleep -Seconds 10
           openclaw gateway status
-          Write-Host "Gateway dÃ©marrÃ© âœ…"
+          Write-Host "Gateway démarré ✅"
 
-      # â”€â”€ Keep Alive â”€â”€
+      # ── Keep Alive ──
       - name: Keep alive
         run: |
           $mins = [int]"$env:RUNTIME_MINUTES"
@@ -318,8 +322,8 @@ jobs:
             Start-Sleep -Seconds 60
           }
 
-      # â”€â”€ Cleanup â”€â”€
+      # ── Cleanup ──
       - name: Cleanup
         if: always()
         run: |
-          Write-Host "Nettoyage terminÃ©."
+          Write-Host "Nettoyage terminé."
