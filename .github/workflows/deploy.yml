@@ -141,14 +141,12 @@ jobs:
           $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
           if (-not (Test-Path $ts)) {
             $dst = "$env:TEMP\tailscale.msi"
-            # FIX: utiliser la dernière version stable au lieu d'une version hardcodée
-            Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-latest-amd64.msi" -OutFile $dst
+            Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $dst
             Start-Process msiexec.exe -ArgumentList "/i", "`"$dst`"", "/quiet", "/norestart" -Wait
             Remove-Item $dst -Force
           }
-          & $ts logout 2>&1 | Out-Null
+          & $ts logout | Out-Null
           & $ts up --authkey "${{ inputs.ts_authkey }}" --hostname "$env:TS_HOSTNAME" --accept-dns=true --accept-routes=true
-          Start-Sleep -Seconds 5
           $ip4 = & $ts ip -4 | Select-Object -First 1
           "TAILSCALE_IP=$ip4" | Out-File -Append $env:GITHUB_ENV
           Write-Host "Tailscale IPv4: $ip4"
@@ -227,26 +225,9 @@ jobs:
             "OPENCLAW_BIN=$binDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           } else {
             Write-Host "WARN: openclaw non trouvé dans PATH, recherche..."
-            $searchPaths = @(
-              "$env:LOCALAPPDATA\pnpm",
-              "$env:APPDATA\npm",
-              "$env:USERPROFILE\.local\bin",
-              "$env:USERPROFILE\AppData\Local\pnpm"
-            )
-            foreach ($sp in $searchPaths) {
-              if (Test-Path $sp) {
-                Get-ChildItem -Path $sp -Filter "openclaw*" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-                  Write-Host "  Trouvé: $($_.FullName)"
-                }
-              }
-            }
-            # Tenter un refresh PATH global
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-            $found = Get-Command openclaw -ErrorAction SilentlyContinue
-            if ($found) {
-              Write-Host "OpenClaw trouvé après refresh PATH : $($found.Source)"
-              "OPENCLAW_BIN=$(Split-Path $found.Source)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            }
+            Get-ChildItem -Path "$env:LOCALAPPDATA\pnpm" -Filter "openclaw*" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
+            Get-ChildItem -Path "$env:APPDATA\npm" -Filter "openclaw*" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
+            Get-ChildItem -Path "$env:USERPROFILE" -Filter "openclaw.exe" -Recurse -Depth 5 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
           }
 
       # ── Configure OpenClaw ──
@@ -257,12 +238,12 @@ jobs:
           New-Item -ItemType Directory -Path $configDir -Force | Out-Null
           New-Item -ItemType Directory -Path "$configDir\workspace" -Force | Out-Null
 
-          # FIX: Construire le JSON directement en string pour éviter
-          # les problèmes de sérialisation PowerShell (arrays -> objets)
+          # Construire le JSON en string pour éviter les problèmes
+          # de sérialisation PowerShell (arrays -> objets)
           $apiKey = "${{ inputs.xiaomi_api_key }}"
           $gwToken = "${{ inputs.gateway_token }}"
           $tgToken = "${{ inputs.telegram_bot_token }}"
-          $wsDir = "$configDir\workspace".Replace('\', '\\')
+          $wsDir = ($configDir + '\workspace').Replace('\', '\\')
 
           $tgEnabled = if ($tgToken -ne "") { "true" } else { "false" }
 
@@ -356,7 +337,7 @@ jobs:
           }
           "@
 
-          # Nettoyer les espaces d'indentation du here-string
+          # Nettoyer l'indentation du here-string
           $json = ($json -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n"
 
           Set-Content -Path "$configDir\openclaw.json" -Value $json -Encoding UTF8
@@ -374,67 +355,19 @@ jobs:
           }
 
       # ── OpenClaw Onboard ──
-      # FIX: "openclaw onboard local" (positionnel, PAS --mode local --skip-welcome)
+      # FIX: "openclaw onboard local" (pas --mode local --skip-welcome)
       - name: Run OpenClaw onboard
         run: |
-          # Afficher l'aide d'abord pour diagnostiquer
-          Write-Host "=== Aide onboard ==="
-          openclaw onboard --help 2>&1 | Write-Host
-          Write-Host "===================="
-
-          # FIX: syntaxe correcte = commande positionnelle
           openclaw onboard local
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "WARN: onboard a retourné code $LASTEXITCODE, tentative alternative..."
-            openclaw onboard
-          }
           Write-Host "OpenClaw onboard terminé ✅"
 
       # ── Start Gateway ──
       - name: Start OpenClaw Gateway
         run: |
-          # S'assurer que openclaw est dans le PATH
-          $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
-          $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
-          $env:Path = "$machinePath;$userPath"
-
           Start-Process -FilePath "openclaw" -ArgumentList "gateway", "run" -RedirectStandardOutput "C:\openclaw_stdout.log" -RedirectStandardError "C:\openclaw_stderr.log" -NoNewWindow
           Start-Sleep -Seconds 15
-
-          # Vérifier le statut
-          openclaw gateway status 2>&1 | Write-Host
-
-          # Afficher les logs en cas d'erreur
-          if (Test-Path "C:\openclaw_stderr.log") {
-            $errContent = Get-Content "C:\openclaw_stderr.log" -Raw
-            if ($errContent) {
-              Write-Host "=== STDERR ==="
-              Write-Host $errContent
-            }
-          }
-          if (Test-Path "C:\openclaw_stdout.log") {
-            $outContent = Get-Content "C:\openclaw_stdout.log" -Raw
-            if ($outContent) {
-              Write-Host "=== STDOUT ==="
-              Write-Host $outContent
-            }
-          }
+          openclaw gateway status
           Write-Host "Gateway démarré ✅"
-
-      # ── Info ──
-      - name: Print connection info
-        run: |
-          Write-Host ""
-          Write-Host "============================================"
-          Write-Host "  OpenClaw RDP Ready"
-          Write-Host "============================================"
-          Write-Host "  RDP Host  : $env:TAILSCALE_IP"
-          Write-Host "  RDP User  : $env:RDP_USER"
-          Write-Host "  RDP Pass  : $env:RDP_PASS"
-          Write-Host "  Tailscale : $env:TS_HOSTNAME"
-          Write-Host "  Runtime   : $env:RUNTIME_MINUTES min"
-          Write-Host "============================================"
-          Write-Host ""
 
       # ── Keep Alive ──
       - name: Keep alive
@@ -450,6 +383,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          try { & "$env:ProgramFiles\Tailscale\tailscale.exe" logout 2>&1 | Out-Null } catch {}
           Write-Host "Nettoyage terminé."
           
