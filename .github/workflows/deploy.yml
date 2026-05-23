@@ -204,7 +204,8 @@ jobs:
           }
           $ver = & node --version 2>&1
           Write-Host "Node.js version : $ver"
-            # ── OpenClaw (install officiel Windows) ──
+
+      # ── OpenClaw (install officiel Windows) ──
       - name: Install OpenClaw
         run: |
           iwr -useb https://openclaw.ai/install.ps1 | iex
@@ -228,8 +229,7 @@ jobs:
             Get-ChildItem -Path "$env:APPDATA\npm" -Filter "openclaw*" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
             Get-ChildItem -Path "$env:USERPROFILE" -Filter "openclaw.exe" -Recurse -Depth 5 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
           }
-
-      # ── Configure OpenClaw ──
+            # ── Configure OpenClaw ──
       - name: Configure OpenClaw
         run: |
           $homeDir = $env:USERPROFILE
@@ -244,7 +244,6 @@ jobs:
 
           $tgEnabled = if ($tgToken -ne "") { "true" } else { "false" }
 
-          # Écrire le JSON proprement via here-string (PAS de ConvertTo-Json)
           $json = @"
           {
             "models": {
@@ -335,7 +334,6 @@ jobs:
           }
           "@
 
-          # Nettoyer l'indentation du here-string
           $json = ($json -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n"
 
           Set-Content -Path "$configDir\openclaw.json" -Value $json -Encoding UTF8
@@ -344,7 +342,6 @@ jobs:
           Write-Host "Model: xiaomi-coding/mimo-v2.5-pro"
           Write-Host "baseUrl: https://token-plan-sgp.xiaomimimo.com/v1"
 
-          # Vérifier que le JSON est valide
           try {
             $null = Get-Content "$configDir\openclaw.json" -Raw | ConvertFrom-Json
             Write-Host "JSON valide ✅"
@@ -353,24 +350,17 @@ jobs:
           }
 
       # ── OpenClaw Onboard ──
-      # Le prompt TUI interactif ne peut pas être contourné en CI.
-      # On essaie les flags, puis on écrit les marqueurs d'acceptation
-      # directement dans des fichiers séparés (sans toucher à openclaw.json).
       - name: Run OpenClaw onboard
         continue-on-error: true
         run: |
-          # ── Diagnostic : afficher l'aide ──
-          Write-Host "=== openclaw --help ==="
-          openclaw --help 2>&1 | Write-Host
-          Write-Host ""
           Write-Host "=== openclaw onboard --help ==="
           openclaw onboard --help 2>&1 | Write-Host
-          Write-Host "==============================="
+          Write-Host "================================"
 
           $configDir = "$env:USERPROFILE\.openclaw"
           $success = $false
 
-          # ── Tentative 1 : flags courants ──
+          # Tentative 1 : flags courants
           $flags = @("--yes", "-y", "--accept", "--agree", "--confirm", "--force", "--non-interactive", "--no-prompt")
           foreach ($flag in $flags) {
             Write-Host "`n--- openclaw onboard $flag ---"
@@ -382,7 +372,7 @@ jobs:
             }
           }
 
-          # ── Tentative 2 : variables d'environnement ──
+          # Tentative 2 : variables d'environnement
           if (-not $success) {
             Write-Host "`n--- Tentative avec variables d'environnement ---"
             $env:CI = "true"
@@ -397,12 +387,9 @@ jobs:
             }
           }
 
-          # ── Tentative 3 : écrire les marqueurs d'acceptation ──
-          # (dans des fichiers séparés, PAS dans openclaw.json)
+          # Tentative 3 : fichiers d'acceptation (PAS dans openclaw.json)
           if (-not $success) {
             Write-Host "`n--- Écriture des marqueurs d'acceptation ---"
-
-            # Fichiers d'acceptation possibles
             $markers = @(
               "$configDir\.onboarded",
               "$configDir\onboarded",
@@ -410,7 +397,6 @@ jobs:
               "$configDir\accepted",
               "$configDir\terms-accepted",
               "$configDir\.terms-accepted",
-              "$configDir\.terms_accepted",
               "$configDir\setup-complete",
               "$configDir\.setup-complete"
             )
@@ -419,12 +405,7 @@ jobs:
               Set-Content -Path $m -Value "true" -Encoding UTF8 -EA SilentlyContinue
               Write-Host "  Écrit: $m"
             }
-
-            # Aussi dans APPDATA et LOCALAPPDATA (au cas où)
-            $altDirs = @(
-              "$env:APPDATA\openclaw",
-              "$env:LOCALAPPDATA\openclaw"
-            )
+            $altDirs = @("$env:APPDATA\openclaw", "$env:LOCALAPPDATA\openclaw")
             foreach ($d in $altDirs) {
               New-Item -ItemType Directory -Path $d -Force -EA SilentlyContinue | Out-Null
               Set-Content -Path "$d\.onboarded" -Value "true" -Encoding UTF8 -EA SilentlyContinue
@@ -433,26 +414,21 @@ jobs:
             }
           }
 
-          # ── Réparation : doctor --fix ──
+          # Réparation config
           Write-Host "`n--- openclaw doctor --fix ---"
           & openclaw doctor --fix 2>&1 | Out-String | Write-Host
 
-          # ── Validation finale de la config ──
           Write-Host "`n--- openclaw config validate ---"
           & openclaw config validate 2>&1 | Out-String | Write-Host
 
-          # ── Vérifier la config JSON est toujours valide ──
+          # Vérifier JSON intact
           try {
             $null = Get-Content "$configDir\openclaw.json" -Raw | ConvertFrom-Json
             Write-Host "JSON config toujours valide ✅"
           } catch {
-            Write-Host "⚠ JSON corrompu, restauration..."
-            # Le step "Configure OpenClaw" a déjà écrit le bon JSON,
-            # on le réécrit au cas où doctor --fix l'aurait modifié
-            Write-Host "Restaurez le workflow pour relancer Configure OpenClaw"
+            Write-Host "⚠ JSON corrompu après doctor --fix"
           }
 
-          # Lister les fichiers .openclaw pour diagnostic
           Write-Host "`n=== Fichiers .openclaw ==="
           Get-ChildItem -Path $configDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
             Write-Host "  $($_.FullName) ($($_.Length) bytes)"
@@ -460,8 +436,7 @@ jobs:
 
           if (-not $success) {
             Write-Host "`n⚠ L'onboard interactif n'a pas pu être auto-accepté."
-            Write-Host "Les marqueurs d'acceptation ont été écrits manuellement."
-            Write-Host "Le gateway va démarrer avec la config existante."
+            Write-Host "Les marqueurs ont été écrits manuellement."
           } else {
             Write-Host "`n✅ Onboard terminé avec succès."
           }
@@ -474,38 +449,64 @@ jobs:
           $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
           $env:Path = "$machinePath;$userPath"
 
-          # Réparer la config si nécessaire
-          Write-Host "--- Pré-démarrage : doctor --fix ---"
+          # Diagnostiquer le binaire
+          $cmd = Get-Command openclaw -ErrorAction SilentlyContinue
+          if ($cmd) {
+            Write-Host "openclaw: $($cmd.Source) (Type: $($cmd.CommandType))"
+          } else {
+            Write-Host "ERREUR: openclaw introuvable"
+            exit 1
+          }
+
+          # Réparer + valider
+          Write-Host "`n--- doctor --fix ---"
           & openclaw doctor --fix 2>&1 | Out-String | Write-Host
 
-          # Valider la config
-          Write-Host "--- Validation config ---"
+          Write-Host "--- config validate ---"
           & openclaw config validate 2>&1 | Out-String | Write-Host
 
-          # Démarrer le gateway
-          Write-Host "--- Démarrage gateway ---"
-          Start-Process -FilePath "openclaw" -ArgumentList "gateway", "run" -RedirectStandardOutput "C:\openclaw_stdout.log" -RedirectStandardError "C:\openclaw_stderr.log" -NoNewWindow
+          # Lancer via cmd.exe (openclaw est un .cmd Node.js, pas un .exe)
+          Write-Host "`n--- Démarrage gateway via cmd.exe ---"
+          $logOut = "C:\openclaw_stdout.log"
+          $logErr = "C:\openclaw_stderr.log"
+
+          $proc = Start-Process `
+            -FilePath "cmd.exe" `
+            -ArgumentList "/c", "openclaw gateway run > `"$logOut`" 2> `"$logErr`"" `
+            -WindowStyle Hidden `
+            -PassThru
+
+          Write-Host "PID: $($proc.Id)"
           Start-Sleep -Seconds 20
 
-          Write-Host "--- Statut gateway ---"
+          # Vérifier que le processus tourne
+          $running = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+          if ($running) {
+            Write-Host "✅ Gateway actif (PID $($proc.Id))"
+          } else {
+            Write-Host "⚠ Processus terminé prématurément"
+          }
+
+          # Statut
+          Write-Host "`n--- gateway status ---"
           & openclaw gateway status 2>&1 | Out-String | Write-Host
 
-          # Logs de diagnostic
-          if (Test-Path "C:\openclaw_stderr.log") {
-            $errContent = Get-Content "C:\openclaw_stderr.log" -Raw
-            if ($errContent) {
-              Write-Host "=== STDERR ==="
-              Write-Host $errContent
+          # Logs
+          if (Test-Path $logOut) {
+            $out = Get-Content $logOut -Raw
+            if ($out) {
+              Write-Host "`n=== STDOUT ==="
+              Write-Host $out
             }
           }
-          if (Test-Path "C:\openclaw_stdout.log") {
-            $outContent = Get-Content "C:\openclaw_stdout.log" -Raw
-            if ($outContent) {
-              Write-Host "=== STDOUT ==="
-              Write-Host $outContent
+          if (Test-Path $logErr) {
+            $err = Get-Content $logErr -Raw
+            if ($err) {
+              Write-Host "`n=== STDERR ==="
+              Write-Host $err
             }
           }
-          Write-Host "Gateway démarré ✅"
+          Write-Host "`nGateway démarré ✅"
 
       # ── Keep Alive ──
       - name: Keep alive
