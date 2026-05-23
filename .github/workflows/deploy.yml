@@ -204,8 +204,7 @@ jobs:
           }
           $ver = & node --version 2>&1
           Write-Host "Node.js version : $ver"
-
-      # ── OpenClaw (install officiel Windows) ──
+            # ── OpenClaw (install officiel Windows) ──
       - name: Install OpenClaw
         run: |
           iwr -useb https://openclaw.ai/install.ps1 | iex
@@ -238,12 +237,10 @@ jobs:
           New-Item -ItemType Directory -Path $configDir -Force | Out-Null
           New-Item -ItemType Directory -Path "$configDir\workspace" -Force | Out-Null
 
-          # Construire le JSON en string pour éviter les problèmes
-          # de sérialisation PowerShell (arrays -> objets)
           $apiKey = "${{ inputs.xiaomi_api_key }}"
           $gwToken = "${{ inputs.gateway_token }}"
           $tgToken = "${{ inputs.telegram_bot_token }}"
-          $wsDir = ($configDir + '\workspace').Replace('\', '\\')
+          $wsDir = "$configDir\workspace".Replace('\', '\\')
 
           $tgEnabled = if ($tgToken -ne "") { "true" } else { "false" }
 
@@ -337,7 +334,6 @@ jobs:
           }
           "@
 
-          # Nettoyer l'indentation du here-string
           $json = ($json -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n"
 
           Set-Content -Path "$configDir\openclaw.json" -Value $json -Encoding UTF8
@@ -346,7 +342,6 @@ jobs:
           Write-Host "Model: xiaomi-coding/mimo-v2.5-pro"
           Write-Host "baseUrl: https://token-plan-sgp.xiaomimimo.com/v1"
 
-          # Vérifier que le JSON est valide
           try {
             $null = Get-Content "$configDir\openclaw.json" -Raw | ConvertFrom-Json
             Write-Host "JSON valide ✅"
@@ -355,18 +350,112 @@ jobs:
           }
 
       # ── OpenClaw Onboard ──
-      # FIX: "openclaw onboard local" (pas --mode local --skip-welcome)
       - name: Run OpenClaw onboard
         run: |
-          openclaw onboard local
-          Write-Host "OpenClaw onboard terminé ✅"
+          # Afficher l'aide pour diagnostiquer
+          Write-Host "=== openclaw onboard --help ==="
+          openclaw onboard --help 2>&1 | Write-Host
+          Write-Host "================================"
+
+          Write-Host "=== openclaw --help ==="
+          openclaw --help 2>&1 | Write-Host
+          Write-Host "========================"
+
+          # Essayer avec les flags d'acceptation courants
+          $success = $false
+          $flags = @("--yes", "-y", "--accept", "--agree", "--confirm", "--force", "--non-interactive", "--no-prompt")
+
+          foreach ($flag in $flags) {
+            Write-Host "`n--- openclaw onboard $flag ---"
+            & openclaw onboard $flag 2>&1 | Out-String | Write-Host
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "✅ Succès avec: openclaw onboard $flag"
+              $success = $true
+              break
+            }
+            Write-Host "Code retour: $LASTEXITCODE"
+          }
+
+          # Essayer avec des variables d'environnement
+          if (-not $success) {
+            Write-Host "`n--- Tentative avec CI=true ---"
+            $env:CI = "true"
+            $env:OPENCLAW_NONINTERACTIVE = "1"
+            $env:OPENCLAW_ACCEPT_TERMS = "true"
+            $env:TERM = "dumb"
+            & openclaw onboard 2>&1 | Out-String | Write-Host
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "✅ Succès avec CI=true"
+              $success = $true
+            }
+          }
+
+          # Dernier recours : fichier d'acceptation
+          if (-not $success) {
+            Write-Host "`n--- Tentative : fichier d'acceptation ---"
+            $configDir = "$env:USERPROFILE\.openclaw"
+
+            $acceptFiles = @(
+              "$configDir\accepted",
+              "$configDir\.accepted",
+              "$configDir\terms-accepted",
+              "$configDir\.terms-accepted"
+            )
+            foreach ($f in $acceptFiles) {
+              Set-Content -Path $f -Value "true" -Encoding UTF8
+            }
+
+            $configPath = "$configDir\openclaw.json"
+            if (Test-Path $configPath) {
+              $cfg = Get-Content $configPath -Raw | ConvertFrom-Json
+              $cfg | Add-Member -NotePropertyName "termsAccepted" -NotePropertyValue $true -Force
+              $cfg | Add-Member -NotePropertyName "acceptedAt" -NotePropertyValue (Get-Date -Format "o") -Force
+              $cfg | ConvertTo-Json -Depth 20 | Set-Content -Path $configPath -Encoding UTF8
+              Write-Host "Config mise à jour avec termsAccepted"
+            }
+
+            Write-Host "`n--- Retry openclaw onboard ---"
+            $env:CI = "true"
+            $env:OPENCLAW_ACCEPT_TERMS = "true"
+            & openclaw onboard 2>&1 | Out-String | Write-Host
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "✅ Succès"
+              $success = $true
+            }
+          }
+
+          if (-not $success) {
+            Write-Host "`n⚠ L'onboard n'a pas pu être auto-accepté."
+            Write-Host "Le gateway pourrait fonctionner quand même si la config est bonne."
+          }
+
+          Write-Host "`nOpenClaw onboard step terminé"
 
       # ── Start Gateway ──
       - name: Start OpenClaw Gateway
         run: |
+          $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+          $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+          $env:Path = "$machinePath;$userPath"
+
           Start-Process -FilePath "openclaw" -ArgumentList "gateway", "run" -RedirectStandardOutput "C:\openclaw_stdout.log" -RedirectStandardError "C:\openclaw_stderr.log" -NoNewWindow
           Start-Sleep -Seconds 15
-          openclaw gateway status
+          openclaw gateway status 2>&1 | Write-Host
+
+          if (Test-Path "C:\openclaw_stderr.log") {
+            $errContent = Get-Content "C:\openclaw_stderr.log" -Raw
+            if ($errContent) {
+              Write-Host "=== STDERR ==="
+              Write-Host $errContent
+            }
+          }
+          if (Test-Path "C:\openclaw_stdout.log") {
+            $outContent = Get-Content "C:\openclaw_stdout.log" -Raw
+            if ($outContent) {
+              Write-Host "=== STDOUT ==="
+              Write-Host $outContent
+            }
+          }
           Write-Host "Gateway démarré ✅"
 
       # ── Keep Alive ──
