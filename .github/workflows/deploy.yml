@@ -127,8 +127,7 @@ jobs:
             $list = Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/tailnet/$tn/devices" -Headers @{ Authorization = "Basic $auth" }
             foreach ($d in $list.devices) {
               if ($d.hostname -match '^openclaw[0-9]*$') {
-                $auth2 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${{ inputs.ts_api_key }}:"))
-                Invoke-RestMethod -Method Delete -Uri "https://api.tailscale.com/api/v2/device/$($d.id)" -Headers @{ Authorization = "Basic $auth2" } -EA SilentlyContinue
+                Invoke-RestMethod -Method Delete -Uri "https://api.tailscale.com/api/v2/device/$($d.id)" -Headers @{ Authorization = "Basic $auth" } -EA SilentlyContinue
               }
             }
             Write-Host "Purge terminée."
@@ -142,12 +141,14 @@ jobs:
           $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
           if (-not (Test-Path $ts)) {
             $dst = "$env:TEMP\tailscale.msi"
-            Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $dst
+            # FIX: utiliser la dernière version stable au lieu d'une version hardcodée
+            Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-latest-amd64.msi" -OutFile $dst
             Start-Process msiexec.exe -ArgumentList "/i", "`"$dst`"", "/quiet", "/norestart" -Wait
             Remove-Item $dst -Force
           }
-          & $ts logout | Out-Null
+          & $ts logout 2>&1 | Out-Null
           & $ts up --authkey "${{ inputs.ts_authkey }}" --hostname "$env:TS_HOSTNAME" --accept-dns=true --accept-routes=true
+          Start-Sleep -Seconds 5
           $ip4 = & $ts ip -4 | Select-Object -First 1
           "TAILSCALE_IP=$ip4" | Out-File -Append $env:GITHUB_ENV
           Write-Host "Tailscale IPv4: $ip4"
@@ -212,23 +213,43 @@ jobs:
           iwr -useb https://openclaw.ai/install.ps1 | iex
           Start-Sleep -Seconds 5
 
-          # Trouver le binaire openclaw
+          # Recharger le PATH pour trouver openclaw
+          $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+          $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+          $env:Path = "$machinePath;$userPath"
+
           $found = Get-Command openclaw -ErrorAction SilentlyContinue
           if ($found) {
             Write-Host "OpenClaw trouvé : $($found.Source)"
             $ver = & openclaw --version 2>&1
             Write-Host "OpenClaw version : $ver"
-            # Sauvegarder le dossier pour les steps suivants
             $binDir = Split-Path $found.Source
             "OPENCLAW_BIN=$binDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           } else {
             Write-Host "WARN: openclaw non trouvé dans PATH, recherche..."
-            Get-ChildItem -Path "$env:LOCALAPPDATA\pnpm" -Filter "openclaw*" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
-            Get-ChildItem -Path "$env:APPDATA\npm" -Filter "openclaw*" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
-            Get-ChildItem -Path "$env:USERPROFILE" -Filter "openclaw.exe" -Recurse -Depth 5 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
+            $searchPaths = @(
+              "$env:LOCALAPPDATA\pnpm",
+              "$env:APPDATA\npm",
+              "$env:USERPROFILE\.local\bin",
+              "$env:USERPROFILE\AppData\Local\pnpm"
+            )
+            foreach ($sp in $searchPaths) {
+              if (Test-Path $sp) {
+                Get-ChildItem -Path $sp -Filter "openclaw*" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+                  Write-Host "  Trouvé: $($_.FullName)"
+                }
+              }
+            }
+            # Tenter un refresh PATH global
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $found = Get-Command openclaw -ErrorAction SilentlyContinue
+            if ($found) {
+              Write-Host "OpenClaw trouvé après refresh PATH : $($found.Source)"
+              "OPENCLAW_BIN=$(Split-Path $found.Source)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
           }
 
-      # ── Configure OpenClaw (Token Plan - doc officielle) ──
+      # ── Configure OpenClaw ──
       - name: Configure OpenClaw
         run: |
           $homeDir = $env:USERPROFILE
@@ -236,100 +257,184 @@ jobs:
           New-Item -ItemType Directory -Path $configDir -Force | Out-Null
           New-Item -ItemType Directory -Path "$configDir\workspace" -Force | Out-Null
 
-          # ============================================================
-          # Token Plan config (doc officielle) :
-          # - Provider nommé "xiaomi-coding" (PAS "xiaomi")
-          # - PAS de bloc "auth" (supprimé)
-          # - apiKey directement dans le provider
-          # - baseUrl Token Plan : https://token-plan-sgp.xiaomimimo.com/v1
-          # ============================================================
+          # FIX: Construire le JSON directement en string pour éviter
+          # les problèmes de sérialisation PowerShell (arrays -> objets)
+          $apiKey = "${{ inputs.xiaomi_api_key }}"
+          $gwToken = "${{ inputs.gateway_token }}"
+          $tgToken = "${{ inputs.telegram_bot_token }}"
+          $wsDir = "$configDir\workspace".Replace('\', '\\')
 
-          $config = @{
-            models = @{
-              mode = "merge"
-              providers = @{
-                "xiaomi-coding" = @{
-                  baseUrl = "https://token-plan-sgp.xiaomimimo.com/v1"
-                  apiKey = "${{ inputs.xiaomi_api_key }}"
-                  api = "openai-completions"
-                  models = @(
-                    @{
-                      id = "mimo-v2.5-pro"
-                      name = "mimo-v2.5-pro"
-                      reasoning = $true
-                      input = @("text")
-                      contextWindow = 1048576
-                      maxTokens = 32000
+          $tgEnabled = if ($tgToken -ne "") { "true" } else { "false" }
+
+          $json = @"
+          {
+            "models": {
+              "mode": "merge",
+              "providers": {
+                "xiaomi-coding": {
+                  "baseUrl": "https://token-plan-sgp.xiaomimimo.com/v1",
+                  "apiKey": "$apiKey",
+                  "api": "openai-completions",
+                  "models": [
+                    {
+                      "id": "mimo-v2.5-pro",
+                      "name": "mimo-v2.5-pro",
+                      "reasoning": true,
+                      "input": ["text"],
+                      "contextWindow": 1048576,
+                      "maxTokens": 32000
+                    },
+                    {
+                      "id": "mimo-v2.5",
+                      "name": "mimo-v2.5",
+                      "reasoning": true,
+                      "input": ["text", "image"],
+                      "contextWindow": 262144,
+                      "maxTokens": 32000
                     }
-                    @{
-                      id = "mimo-v2.5"
-                      name = "mimo-v2.5"
-                      reasoning = $true
-                      input = @("text", "image")
-                      contextWindow = 262144
-                      maxTokens = 32000
-                    }
-                  )
+                  ]
                 }
               }
-            }
-            agents = @{
-              defaults = @{
-                workspace = "$configDir\workspace"
-                model = @{
-                  primary = "xiaomi-coding/mimo-v2.5-pro"
+            },
+            "agents": {
+              "defaults": {
+                "workspace": "$wsDir",
+                "model": {
+                  "primary": "xiaomi-coding/mimo-v2.5-pro"
+                },
+                "models": {
+                  "xiaomi-coding/mimo-v2.5-pro": {},
+                  "xiaomi-coding/mimo-v2.5": {}
                 }
-                models = @{
-                  "xiaomi-coding/mimo-v2.5-pro" = @{}
-                  "xiaomi-coding/mimo-v2.5" = @{}
-                }
               }
-            }
-            gateway = @{
-              mode = "local"
-              auth = @{
-                mode = "token"
-                token = "${{ inputs.gateway_token }}"
+            },
+            "gateway": {
+              "mode": "local",
+              "auth": {
+                "mode": "token",
+                "token": "$gwToken"
+              },
+              "port": 18789,
+              "bind": "loopback",
+              "tailscale": {
+                "mode": "off",
+                "resetOnExit": false
+              },
+              "nodes": {
+                "denyCommands": [
+                  "camera.snap",
+                  "camera.clip",
+                  "screen.record",
+                  "contacts.add",
+                  "calendar.add",
+                  "reminders.add",
+                  "sms.send",
+                  "sms.search"
+                ]
+              },
+              "controlUi": {
+                "allowInsecureAuth": true
               }
-              port = 18789
-              bind = "loopback"
-              tailscale = @{ mode = "off"; resetOnExit = $false }
-              nodes = @{
-                denyCommands = @("camera.snap", "camera.clip", "screen.record", "contacts.add", "calendar.add", "reminders.add", "sms.send", "sms.search")
-              }
-              controlUi = @{ allowInsecureAuth = $true }
-            }
-            session = @{ dmScope = "per-channel-peer" }
-            tools = @{ profile = "coding" }
-            channels = @{
-              telegram = @{
-                enabled = $("${{ inputs.telegram_bot_token }}" -ne "")
-                groups = @{ "*" = @{ requireMention = $true } }
-                botToken = "${{ inputs.telegram_bot_token }}"
+            },
+            "session": {
+              "dmScope": "per-channel-peer"
+            },
+            "tools": {
+              "profile": "coding"
+            },
+            "channels": {
+              "telegram": {
+                "enabled": $tgEnabled,
+                "groups": {
+                  "*": {
+                    "requireMention": true
+                  }
+                },
+                "botToken": "$tgToken"
               }
             }
           }
+          "@
 
-          $json = $config | ConvertTo-Json -Depth 20
+          # Nettoyer les espaces d'indentation du here-string
+          $json = ($json -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n"
+
           Set-Content -Path "$configDir\openclaw.json" -Value $json -Encoding UTF8
           Write-Host "Config Token Plan créée ✅"
           Write-Host "Provider: xiaomi-coding"
           Write-Host "Model: xiaomi-coding/mimo-v2.5-pro"
           Write-Host "baseUrl: https://token-plan-sgp.xiaomimimo.com/v1"
 
+          # Vérifier que le JSON est valide
+          try {
+            $null = Get-Content "$configDir\openclaw.json" -Raw | ConvertFrom-Json
+            Write-Host "JSON valide ✅"
+          } catch {
+            Write-Host "ERREUR JSON: $($_.Exception.Message)"
+          }
+
       # ── OpenClaw Onboard ──
+      # FIX: "openclaw onboard local" (positionnel, PAS --mode local --skip-welcome)
       - name: Run OpenClaw onboard
         run: |
-          openclaw onboard --mode local --skip-welcome
+          # Afficher l'aide d'abord pour diagnostiquer
+          Write-Host "=== Aide onboard ==="
+          openclaw onboard --help 2>&1 | Write-Host
+          Write-Host "===================="
+
+          # FIX: syntaxe correcte = commande positionnelle
+          openclaw onboard local
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "WARN: onboard a retourné code $LASTEXITCODE, tentative alternative..."
+            openclaw onboard
+          }
           Write-Host "OpenClaw onboard terminé ✅"
 
       # ── Start Gateway ──
       - name: Start OpenClaw Gateway
         run: |
+          # S'assurer que openclaw est dans le PATH
+          $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+          $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+          $env:Path = "$machinePath;$userPath"
+
           Start-Process -FilePath "openclaw" -ArgumentList "gateway", "run" -RedirectStandardOutput "C:\openclaw_stdout.log" -RedirectStandardError "C:\openclaw_stderr.log" -NoNewWindow
           Start-Sleep -Seconds 15
-          openclaw gateway status
+
+          # Vérifier le statut
+          openclaw gateway status 2>&1 | Write-Host
+
+          # Afficher les logs en cas d'erreur
+          if (Test-Path "C:\openclaw_stderr.log") {
+            $errContent = Get-Content "C:\openclaw_stderr.log" -Raw
+            if ($errContent) {
+              Write-Host "=== STDERR ==="
+              Write-Host $errContent
+            }
+          }
+          if (Test-Path "C:\openclaw_stdout.log") {
+            $outContent = Get-Content "C:\openclaw_stdout.log" -Raw
+            if ($outContent) {
+              Write-Host "=== STDOUT ==="
+              Write-Host $outContent
+            }
+          }
           Write-Host "Gateway démarré ✅"
+
+      # ── Info ──
+      - name: Print connection info
+        run: |
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "  OpenClaw RDP Ready"
+          Write-Host "============================================"
+          Write-Host "  RDP Host  : $env:TAILSCALE_IP"
+          Write-Host "  RDP User  : $env:RDP_USER"
+          Write-Host "  RDP Pass  : $env:RDP_PASS"
+          Write-Host "  Tailscale : $env:TS_HOSTNAME"
+          Write-Host "  Runtime   : $env:RUNTIME_MINUTES min"
+          Write-Host "============================================"
+          Write-Host ""
 
       # ── Keep Alive ──
       - name: Keep alive
@@ -345,5 +450,6 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
+          try { & "$env:ProgramFiles\Tailscale\tailscale.exe" logout 2>&1 | Out-Null } catch {}
           Write-Host "Nettoyage terminé."
           
