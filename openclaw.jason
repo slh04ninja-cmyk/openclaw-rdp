@@ -1,0 +1,144 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "C:\\Users\\Ghzali Salah\\.openclaw\\workspace",
+      "models": {
+        "xiaomi-coding/mimo-v2.5-pro": {},
+        "xiaomi-coding/mimo-v2-pro": {},
+        "xiaomi-coding/mimo-v2-flash": {
+          "alias": "Xiaomi"
+        }
+      },
+      "model": {
+        "primary": "xiaomi-coding/mimo-v2-pro"
+      }
+    }
+  },
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": "e381674038f63a79c4a9f6715d8a400d364b90840fe6280b"
+    },
+    "port": 18780,
+    "bind": "loopback",
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "contacts.add",
+        "calendar.add",
+        "reminders.add",
+        "sms.send",
+        "sms.search"
+      ]
+    },
+    "controlUi": {
+      "allowInsecureAuth": true
+    }
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "tools": {
+    "profile": "coding"
+  },
+  "plugins": {
+    "entries": {
+      "xiaomi": {
+        "enabled": true
+      },
+      "telegram": {
+        "enabled": true
+      }
+    }
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "xiaomi-coding": {
+        "baseUrl": "https://token-plan-sgp.xiaomimimo.com/v1",
+        "apiKey": "tp-s33ve22r0l6cmafk1e9bgfx30nd3x4564sh1t8tmk8jazmpm",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "mimo-v2-flash",
+            "name": "Xiaomi MiMo V2 Flash",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 262144,
+            "maxTokens": 8192
+          },
+          {
+            "id": "mimo-v2-pro",
+            "name": "Xiaomi MiMo V2 Pro",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1048576,
+            "maxTokens": 32000
+          },
+          {
+            "id": "mimo-v2-omni",
+            "name": "Xiaomi MiMo V2 Omni",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 262144,
+            "maxTokens": 32000
+          }
+        ]
+      }
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "groups": {
+        "*": {
+          "requireMention": true
+        }
+      },
+      "botToken": "8613051199:AAGFbK9GFQ2cyjRqlOmBtACgf6wffV8-xBk",
+      "dmPolicy": "disabled"
+    }
+  },
+  "wizard": {
+    "lastRunAt": "2026-05-22T17:31:56.214Z",
+    "lastRunVersion": "2026.5.20",
+    "lastRunCommand": "onboard",
+    "lastRunMode": "local"
+  },
+  "meta": {
+    "lastTouchedVersion": "2026.5.20",
+    "lastTouchedAt": "2026-05-22T17:31:57.467Z"
+  }
+}
