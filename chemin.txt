@@ -1,1 +1,8 @@
 C:\Users\User-Name\.openclaw\
+
+ws://127.0.0.1:18780
+Token: e381674038f63a79c4a9f6715d8a400d364b90840fe6280b█
+
+mimo 60 : tp-s1qje2cvw696zff4af8mc60jlzvk0crk5wttvg9ew7bulf1o
+          tp-s33ve22r0l6cmafk1e9bgfx30nd3x4564sh1t8tmk8jazmpm
+GITHUB: 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
